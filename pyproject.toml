@@ -1,0 +1,25 @@
+[project]
+name = "maya-mcp"
+version = "1.0.0"
+description = "Maya 3D integration through the Model Context Protocol"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "bara-science-animated"}]
+dependencies = [
+    "mcp[cli]>=1.3.0,<2",
+]
+
+[project.urls]
+Repository = "https://github.com/science-animated/maya-mcp"
+Issues = "https://github.com/science-animated/maya-mcp/issues"
+
+[project.scripts]
+maya-mcp = "maya_mcp:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
