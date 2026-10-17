@@ -1,4 +1,4 @@
-from mcp.server.fastmcp import FastMCP, Context, Image
+from mcp.server.mcpserver import MCPServer, Context, Image
 import socket
 import json
 import base64
@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Union
+
+from . import __version__
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -113,7 +115,7 @@ def _read_and_remove(filepath: str) -> bytes:
 
 
 @asynccontextmanager
-async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
+async def server_lifespan(server: MCPServer) -> AsyncIterator[Dict[str, Any]]:
     logger.info("MayaMCP server starting")
     try:
         get_maya_connection()._connect().close()
@@ -124,7 +126,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     logger.info("MayaMCP server stopped")
 
 
-mcp = FastMCP("MayaMCP", lifespan=server_lifespan)
+mcp = MCPServer("MayaMCP", version=__version__, lifespan=server_lifespan)
 
 
 # ---------------------------------------------------------------------------
