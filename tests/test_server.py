@@ -43,7 +43,7 @@ def test_each_command_uses_its_own_connection(fake_maya):
     for _ in range(5):
         get_maya_connection().send_command("get_scene_info")
     assert maya.connections == 5
-    assert maya.open_connections == 0  # nothing is left open between commands
+    assert maya.wait_for("closed_by_client", 5) == 5  # the client closed every connection itself
 
 
 def test_parallel_commands_all_get_their_own_answer(fake_maya):

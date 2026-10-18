@@ -48,16 +48,16 @@ class FakeMaya:
 
     It decodes the command, passes it to ``respond(command) -> dict`` and sends the
     JSON reply followed by Maya's ``\\n\\x00`` terminator. Like Maya, it serves one
-    connection at a time. ``respond`` may also return ``None`` to close the
-    connection without answering, or raise to simulate a crash.
+    connection at a time and keeps it open until the client closes it, so a client
+    that leaves its socket open blocks everyone else. ``respond`` may also return
+    ``None`` to close the connection without answering, or raise to simulate a crash.
     """
 
     def __init__(self, respond=None):
         self.respond = respond or (lambda cmd: {"status": "success", "result": {"echo": cmd}})
         self.commands = []
         self.connections = 0
-        self.open_connections = 0
-        self.max_open_connections = 0
+        self.closed_by_client = 0  # connections the client hung up on after its answer
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
@@ -76,16 +76,12 @@ class FakeMaya:
                 return
             with self._lock:
                 self.connections += 1
-                self.open_connections += 1
-                self.max_open_connections = max(self.max_open_connections, self.open_connections)
             try:
                 self._handle(conn)
             except OSError:
                 pass  # the client gave up (e.g. timed out); Maya just moves on too
             finally:
                 conn.close()
-                with self._lock:
-                    self.open_connections -= 1
 
     def _handle(self, conn):
         data = b""
@@ -101,6 +97,18 @@ class FakeMaya:
         if reply is None:
             return
         conn.sendall(json.dumps(reply).encode() + b"\n\x00")
+        # Like Maya, keep the connection until the client closes it (recv returns b"")
+        while conn.recv(65536):
+            pass
+        with self._lock:
+            self.closed_by_client += 1
+
+    def wait_for(self, attribute, value, timeout=2.0):
+        """Wait until a counter reaches value (the server thread updates it asynchronously)."""
+        deadline = time.monotonic() + timeout
+        while getattr(self, attribute) != value and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return getattr(self, attribute)
 
     def close(self):
         self._stop = True
