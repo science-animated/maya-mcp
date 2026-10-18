@@ -14,6 +14,7 @@ import socket
 import struct
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from maya_mcp.server import mcp
 
@@ -41,9 +42,8 @@ RELOAD = "import importlib, maya_mcp_handlers; importlib.reload(maya_mcp_handler
 
 
 async def call(tool, **args):
-    result = await mcp.call_tool(tool, args)
+    result = await mcp.call_tool(tool, args)  # raises ToolError if the tool fails
     out = "".join(c.text for c in result.content if c.type == "text")
-    assert not out.startswith("Error:"), out
     try:
         return json.loads(out)
     except ValueError:
@@ -95,9 +95,16 @@ async def test_attributes_and_materials():
 
 async def test_execute_code_result_and_traceback():
     assert (await call("execute_maya_code", code="x = 6\nx * 7"))["result"] == "42"
-    result = await mcp.call_tool("execute_maya_code", {"code": "a = 1\ncmds.getAttr('mcp_it_nothing.tx')"})
-    out = result.content[0].text
+    with pytest.raises(ToolError) as err:
+        await mcp.call_tool("execute_maya_code", {"code": "a = 1\ncmds.getAttr('mcp_it_nothing.tx')"})
+    out = str(err.value)
     assert 'File "<maya_mcp>", line 2' in out and "cmds.getAttr('mcp_it_nothing.tx')" in out
+
+
+async def test_execute_large_code_and_reply():
+    # Far beyond commandPort's documented 4096-character default buffer, in both directions
+    code = "x = 0\n" + "x += 1\n" * 20000 + "'y' * 200000 + str(x)"
+    assert (await call("execute_maya_code", code=code))["result"] == repr("y" * 200000 + "20000")
 
 
 async def test_export_and_import(tmp_path):
@@ -135,8 +142,29 @@ async def test_render_scene():
         assert image, result.content[0].text
         assert struct.unpack(">II", base64.b64decode(image[0].data)[16:24]) == (64, 64)
     finally:
+        restored = await maya("(cmds.getAttr('defaultResolution.width'), cmds.getAttr('defaultResolution.height'))")
         w, h = eval(size)
         await call("set_render_settings", width=w, height=h)
+    assert restored == size  # the override only applied to this render
+
+
+async def test_create_named_light_and_move_it():
+    created = await call("create_object", object_type="point_light", name="mcp_it_light")
+    assert created["name"] == "mcp_it_light"
+    await call("set_transform", name="mcp_it_light", translation=[0, 5, 0])
+    assert (await call("get_transform", name="mcp_it_light"))["translation"] == pytest.approx([0, 5, 0])
+    assert await maya("cmds.listRelatives('mcp_it_light', shapes=True, type='pointLight') is not None") == "True"
+
+
+async def test_assign_default_material():
+    await call("create_object", object_type="cube", name="mcp_it_default")
+    await call("create_material", name="mcp_it_tmpMAT")
+    await call("assign_material", material_name="mcp_it_tmpMAT", object_names=["mcp_it_default"])
+    default = await maya("cmds.listConnections('initialShadingGroup.surfaceShader')[0]")
+    result = await call("assign_material", material_name=eval(default), object_names=["mcp_it_default"])
+    assert result["shading_group"] == "initialShadingGroup"
+    sgs = await maya("cmds.listConnections(cmds.listRelatives('mcp_it_default', shapes=True)[0], type='shadingEngine')")
+    assert eval(sgs) == ["initialShadingGroup"]
 
 
 async def test_scene_info_paging_and_filter():

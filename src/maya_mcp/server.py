@@ -5,9 +5,10 @@ import os
 import socket
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, Union
+from typing import Any, AsyncIterator, Dict
 
 from mcp.server.mcpserver import Context, Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from . import __version__
 
@@ -58,8 +59,9 @@ class MayaConnection:
             if not chunk:
                 break
             chunks.append(chunk)
-            data = b"".join(chunks)
-            if b"\x00" in data:
+            # The terminator is one byte, so it can't be split across chunks
+            if b"\x00" in chunk:
+                data = b"".join(chunks)
                 return data[: data.index(b"\x00")].decode("utf-8").strip()
         raise ConnectionError("Maya commandPort closed without sending a response")
 
@@ -86,7 +88,16 @@ class MayaConnection:
                 raise ConnectionError(f"Lost connection to Maya: {e}") from e
         logger.info(f"Received response ({len(raw)} bytes)")
 
-        response = json.loads(raw)
+        try:
+            response = json.loads(raw)
+        except ValueError:
+            # Maya evaluated something other than dispatch(), or the expression failed
+            response = None
+        if not isinstance(response, dict):
+            raise RuntimeError(
+                f"Unexpected reply from Maya: {raw[:200]!r}. Is maya_mcp_handlers.py in Maya's scripts "
+                f"directory? Maya's Script Editor shows the error."
+            )
         if response.get("status") == "error":
             raise RuntimeError(response.get("message", "Unknown error from Maya"))
         return response.get("result", {})
@@ -96,6 +107,15 @@ def get_maya_connection() -> MayaConnection:
     host = os.getenv("MAYA_HOST", DEFAULT_HOST)
     port = int(os.getenv("MAYA_PORT", DEFAULT_PORT))
     return MayaConnection(host=host, port=port)
+
+
+def _send(command_type: str, params: Dict[str, Any] = None, timeout: float = DEFAULT_RESPONSE_TIMEOUT) -> Any:
+    """Send a command for a tool. Failures become ToolError, which the client gets as an
+    is_error result with the message (any other exception's message stays on the server)."""
+    try:
+        return get_maya_connection().send_command(command_type, params, timeout=timeout)
+    except Exception as e:
+        raise ToolError(str(e)) from e
 
 
 def _read_and_remove(filepath: str) -> bytes:
@@ -145,37 +165,28 @@ def get_scene_info(
     name_filter takes Maya wildcards, e.g. "spike_*". If "truncated" is true, there
     are more objects: call again with offset=next_offset. Set top_level_only=false
     to include objects inside groups. limit is 1-500."""
-    try:
-        params = {"limit": limit, "offset": offset, "top_level_only": top_level_only}
-        if name_filter:
-            params["name_filter"] = name_filter
-        result = get_maya_connection().send_command("get_scene_info", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    params = {"limit": limit, "offset": offset, "top_level_only": top_level_only}
+    if name_filter:
+        params["name_filter"] = name_filter
+    result = _send("get_scene_info", params)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def get_object_info(ctx: Context, object_name: str) -> str:
     """Get detailed information about a specific Maya object: transforms, bounding box, materials, hierarchy."""
-    try:
-        result = get_maya_connection().send_command("get_object_info", {"name": object_name})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("get_object_info", {"name": object_name})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool(structured_output=False)
-def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Union[Image, str]:
+def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Image:
     """Capture the active Maya viewport as a PNG image. The longer side is scaled to max_size."""
-    try:
-        result = get_maya_connection().send_command("get_viewport_screenshot", {"max_size": max_size})
-        filepath = result.get("filepath", "")
-        if not filepath or not os.path.exists(filepath):
-            return f"Error: Screenshot file not found at: {filepath}"
-        return Image(data=_read_and_remove(filepath), format="png")
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("get_viewport_screenshot", {"max_size": max_size})
+    filepath = result.get("filepath", "")
+    if not filepath or not os.path.exists(filepath):
+        raise ToolError(f"Screenshot file not found at: {filepath}")
+    return Image(data=_read_and_remove(filepath), format="png")
 
 
 @mcp.tool()
@@ -183,21 +194,15 @@ def execute_maya_code(ctx: Context, code: str) -> str:
     """Execute arbitrary Python code inside Maya. `cmds` (maya.cmds) is pre-imported.
     Returns printed output, and the value of the last line if it is an expression
     (like the Script Editor). On errors, returns the traceback with line numbers."""
-    try:
-        result = get_maya_connection().send_command("execute_maya_code", {"code": code})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("execute_maya_code", {"code": code})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def get_selected_objects(ctx: Context) -> str:
     """Get the currently selected objects in Maya."""
-    try:
-        result = get_maya_connection().send_command("get_selected_objects")
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("get_selected_objects")
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -209,57 +214,42 @@ def get_selected_objects(ctx: Context) -> str:
 def create_object(ctx: Context, object_type: str, name: str = None) -> str:
     """Create a Maya object. object_type: cube, sphere, plane, cylinder, cone, torus,
     camera, point_light, directional_light, spot_light. Returns the created object name."""
-    try:
-        params = {"object_type": object_type}
-        if name:
-            params["name"] = name
-        result = get_maya_connection().send_command("create_object", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    params = {"object_type": object_type}
+    if name:
+        params["name"] = name
+    result = _send("create_object", params)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def delete_objects(ctx: Context, names: list) -> str:
     """Delete one or more Maya objects by name. names is a list of object names."""
-    try:
-        result = get_maya_connection().send_command("delete_objects", {"names": names})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("delete_objects", {"names": names})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def duplicate_object(ctx: Context, name: str, new_name: str = None) -> str:
     """Duplicate a Maya object. Optionally rename the duplicate."""
-    try:
-        params = {"name": name}
-        if new_name:
-            params["new_name"] = new_name
-        result = get_maya_connection().send_command("duplicate_object", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    params = {"name": name}
+    if new_name:
+        params["new_name"] = new_name
+    result = _send("duplicate_object", params)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def rename_object(ctx: Context, name: str, new_name: str) -> str:
     """Rename a Maya object."""
-    try:
-        result = get_maya_connection().send_command("rename_object", {"name": name, "new_name": new_name})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("rename_object", {"name": name, "new_name": new_name})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def set_parent(ctx: Context, child: str, parent: str = None) -> str:
     """Parent a child object to a parent. Pass parent=null to unparent (move to world)."""
-    try:
-        result = get_maya_connection().send_command("set_parent", {"child": child, "parent": parent})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("set_parent", {"child": child, "parent": parent})
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -277,28 +267,22 @@ def set_transform(
 ) -> str:
     """Set world-space translation [x,y,z], rotation [rx,ry,rz] (degrees), and/or scale [sx,sy,sz] on an object.
     All parameters are optional — only the ones provided will be changed."""
-    try:
-        params = {"name": name}
-        if translation is not None:
-            params["translation"] = translation
-        if rotation is not None:
-            params["rotation"] = rotation
-        if scale is not None:
-            params["scale"] = scale
-        result = get_maya_connection().send_command("set_transform", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    params = {"name": name}
+    if translation is not None:
+        params["translation"] = translation
+    if rotation is not None:
+        params["rotation"] = rotation
+    if scale is not None:
+        params["scale"] = scale
+    result = _send("set_transform", params)
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def get_transform(ctx: Context, name: str) -> str:
     """Get world-space translation, rotation, and scale of a Maya object."""
-    try:
-        result = get_maya_connection().send_command("get_transform", {"name": name})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("get_transform", {"name": name})
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -310,47 +294,33 @@ def get_transform(ctx: Context, name: str) -> str:
 def create_material(ctx: Context, name: str, material_type: str = "lambert") -> str:
     """Create a Maya material/shader and its shading group.
     material_type: lambert, blinn, phong, standardSurface, aiStandardSurface."""
-    try:
-        result = get_maya_connection().send_command("create_material", {"name": name, "material_type": material_type})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("create_material", {"name": name, "material_type": material_type})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def assign_material(ctx: Context, material_name: str, object_names: list) -> str:
     """Assign a material to one or more objects. object_names is a list."""
-    try:
-        result = get_maya_connection().send_command(
-            "assign_material", {"material_name": material_name, "object_names": object_names}
-        )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("assign_material", {"material_name": material_name, "object_names": object_names})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def list_materials(ctx: Context) -> str:
     """List all materials in the current Maya scene."""
-    try:
-        result = get_maya_connection().send_command("list_materials")
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("list_materials")
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def set_material_property(ctx: Context, material_name: str, attribute: str, value) -> str:
     """Set a property on a Maya material. For colors pass [r,g,b] (0-1 range).
     Examples: attribute='color' value=[1,0,0] for red, attribute='transparency' value=[0.5,0.5,0.5]."""
-    try:
-        result = get_maya_connection().send_command(
-            "set_material_property",
-            {"material_name": material_name, "attribute": attribute, "value": value},
-        )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send(
+        "set_material_property",
+        {"material_name": material_name, "attribute": attribute, "value": value},
+    )
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -361,33 +331,22 @@ def set_material_property(ctx: Context, material_name: str, attribute: str, valu
 @mcp.tool()
 def get_attribute(ctx: Context, node: str, attribute: str) -> str:
     """Get the value of an attribute on a Maya node. Example: node='pCube1', attribute='tx'."""
-    try:
-        result = get_maya_connection().send_command("get_attribute", {"node": node, "attribute": attribute})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("get_attribute", {"node": node, "attribute": attribute})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def set_attribute(ctx: Context, node: str, attribute: str, value) -> str:
     """Set the value of an attribute on a Maya node. Pass lists for multi-component attrs."""
-    try:
-        result = get_maya_connection().send_command(
-            "set_attribute", {"node": node, "attribute": attribute, "value": value}
-        )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("set_attribute", {"node": node, "attribute": attribute, "value": value})
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def list_attributes(ctx: Context, node: str, keyable: bool = False) -> str:
     """List attributes on a Maya node. Set keyable=true to list only keyable attributes."""
-    try:
-        result = get_maya_connection().send_command("list_attributes", {"node": node, "keyable": keyable})
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("list_attributes", {"node": node, "keyable": keyable})
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +360,9 @@ def render_scene(
     width: int = None,
     height: int = None,
     output_path: str = None,
-) -> Union[Image, str]:
-    """Render the current Maya scene and return the result as an image.
-    Optionally override width/height. output_path is where to save the render."""
+) -> Image:
+    """Render the current Maya scene with Arnold or Maya Software (whichever is active) and return it as a PNG.
+    width/height override the resolution for this render only. output_path is where to save the render."""
     params = {}
     if width:
         params["width"] = width
@@ -412,19 +371,16 @@ def render_scene(
     if output_path:
         params["output_path"] = output_path
 
-    try:
-        result = get_maya_connection().send_command("render_scene", params, timeout=RENDER_RESPONSE_TIMEOUT)
-        rendered_path = result.get("rendered_path", "")
-        if not rendered_path or not os.path.exists(rendered_path):
-            return f"Error: Rendered file not found at: {rendered_path}"
-        if output_path:
-            with open(rendered_path, "rb") as f:
-                data = f.read()
-        else:
-            data = _read_and_remove(rendered_path)
-        return Image(data=data, format="png")
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("render_scene", params, timeout=RENDER_RESPONSE_TIMEOUT)
+    rendered_path = result.get("rendered_path", "")
+    if not rendered_path or not os.path.exists(rendered_path):
+        raise ToolError(f"Rendered file not found at: {rendered_path}")
+    if output_path:
+        with open(rendered_path, "rb") as f:
+            data = f.read()
+    else:
+        data = _read_and_remove(rendered_path)
+    return Image(data=data, format="png")
 
 
 @mcp.tool()
@@ -436,7 +392,8 @@ def set_render_settings(
     start_frame: float = None,
     end_frame: float = None,
 ) -> str:
-    """Configure Maya render settings. renderer examples: 'mayaSoftware', 'arnold', 'vray'."""
+    """Configure Maya render settings. renderer examples: 'mayaSoftware', 'arnold', 'vray'
+    (render_scene supports 'arnold' and 'mayaSoftware')."""
     params = {}
     if renderer:
         params["renderer"] = renderer
@@ -448,11 +405,8 @@ def set_render_settings(
         params["start_frame"] = start_frame
     if end_frame is not None:
         params["end_frame"] = end_frame
-    try:
-        result = get_maya_connection().send_command("set_render_settings", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send("set_render_settings", params)
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -469,25 +423,19 @@ def export_scene(
 ) -> str:
     """Export the scene or selection. export_type: ma, mb, fbx, obj, abc (Alembic).
     Set selected_only=true to export only selected objects."""
-    try:
-        result = get_maya_connection().send_command(
-            "export_scene",
-            {"filepath": filepath, "export_type": export_type, "selected_only": selected_only},
-        )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    result = _send(
+        "export_scene",
+        {"filepath": filepath, "export_type": export_type, "selected_only": selected_only},
+    )
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()
 def import_file(ctx: Context, filepath: str, import_type: str = None) -> str:
     """Import a file into Maya. import_type auto-detected from extension if not specified.
     Supported: ma, mb, fbx, obj, abc."""
-    try:
-        params = {"filepath": filepath}
-        if import_type:
-            params["import_type"] = import_type
-        result = get_maya_connection().send_command("import_file", params)
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return f"Error: {e}"
+    params = {"filepath": filepath}
+    if import_type:
+        params["import_type"] = import_type
+    result = _send("import_file", params)
+    return json.dumps(result, indent=2)

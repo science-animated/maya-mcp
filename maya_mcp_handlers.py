@@ -264,6 +264,12 @@ def get_selected_objects():
 # Object management
 # ---------------------------------------------------------------------------
 
+
+def _light_transform(shape):
+    """The light commands return the light's shape; objects are named and moved by their transform."""
+    return cmds.listRelatives(shape, parent=True)[0]
+
+
 _OBJECT_CREATORS = {
     "cube": lambda: cmds.polyCube()[0],
     "sphere": lambda: cmds.polySphere()[0],
@@ -272,9 +278,9 @@ _OBJECT_CREATORS = {
     "cone": lambda: cmds.polyCone()[0],
     "torus": lambda: cmds.polyTorus()[0],
     "camera": lambda: cmds.camera()[0],
-    "point_light": lambda: cmds.pointLight(),
-    "directional_light": lambda: cmds.directionalLight(),
-    "spot_light": lambda: cmds.spotLight(),
+    "point_light": lambda: _light_transform(cmds.pointLight()),
+    "directional_light": lambda: _light_transform(cmds.directionalLight()),
+    "spot_light": lambda: _light_transform(cmds.spotLight()),
 }
 
 
@@ -381,7 +387,13 @@ def assign_material(material_name, object_names):
     """Assign a material to a list of objects."""
     if not cmds.objExists(material_name):
         raise ValueError(f"Material not found: {material_name}")
-    sgs = cmds.listConnections(material_name, type="shadingEngine") or []
+    sgs = []
+    # Only shading groups the material is the surface shader of (not e.g. its displacement).
+    # The default material also feeds initialParticleSE, which is for particles, not meshes.
+    for plug in cmds.listConnections(material_name, source=False, type="shadingEngine", plugs=True) or []:
+        sg, attribute = plug.split(".", 1)
+        if attribute == "surfaceShader" and sg != "initialParticleSE" and sg not in sgs:
+            sgs.append(sg)
     if not sgs:
         raise ValueError(f"No shading group found for material: {material_name}")
     sg = sgs[0]
@@ -462,19 +474,33 @@ def list_attributes(node, keyable=False):
 # ---------------------------------------------------------------------------
 
 
+_RENDERERS = ("arnold", "mayaSoftware")
+_PNG_IMAGE_FORMAT = 32  # defaultRenderGlobals.imageFormat value for PNG
+
+
 def render_scene(output_path=None, width=None, height=None):
-    """Render the current scene using the active renderer.
+    """Render the current scene as a PNG with the active renderer (Arnold or Maya Software).
+    width/height apply to this render only; the scene's settings are restored afterwards.
     If output_path is given, the image is moved there; otherwise the caller
     deletes the temp render after reading it."""
+    renderer = cmds.getAttr("defaultRenderGlobals.currentRenderer")
+    if renderer not in _RENDERERS:
+        raise ValueError(f"Rendering with {renderer} is not supported. Supported renderers: {list(_RENDERERS)}")
+
+    overrides = {"defaultRenderGlobals.imageFormat": _PNG_IMAGE_FORMAT}
     if width:
-        cmds.setAttr("defaultResolution.width", int(width))
+        overrides["defaultResolution.width"] = int(width)
     if height:
-        cmds.setAttr("defaultResolution.height", int(height))
-    if cmds.getAttr("defaultRenderGlobals.currentRenderer") == "arnold":
-        rendered = _render_arnold()
-    else:
+        overrides["defaultResolution.height"] = int(height)
+    saved = {attr: cmds.getAttr(attr) for attr in overrides}
+    try:
+        for attr, value in overrides.items():
+            cmds.setAttr(attr, value)
         # cmds.render() is the Maya Software renderer
-        rendered = cmds.render()
+        rendered = _render_arnold() if renderer == "arnold" else cmds.render()
+    finally:
+        for attr, value in saved.items():
+            cmds.setAttr(attr, value)
     if output_path:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         shutil.move(rendered, output_path)
@@ -495,15 +521,12 @@ def _render_arnold():
 
     tmp_dir = tempfile.mkdtemp(prefix="maya_mcp_")
     filepath = os.path.join(tmp_dir, "render.png")
-    image_format = cmds.getAttr("defaultRenderGlobals.imageFormat")
     try:
-        cmds.setAttr("defaultRenderGlobals.imageFormat", 32)  # writeImage uses this format
+        # writeImage uses defaultRenderGlobals.imageFormat, which render_scene sets to PNG
         cmds.renderWindowEditor("renderView", e=True, colorManage=True, writeImage=filepath)
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
-    finally:
-        cmds.setAttr("defaultRenderGlobals.imageFormat", image_format)
     return filepath
 
 

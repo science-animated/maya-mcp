@@ -60,6 +60,17 @@ def test_create_object_unknown_type(cmds):
         handlers.create_object("teapot")
 
 
+@pytest.mark.parametrize(
+    "object_type, command", [("point_light", "pointLight"), ("directional_light", "directionalLight")]
+)
+def test_create_light_names_and_returns_its_transform(cmds, object_type, command):
+    getattr(cmds, command).return_value = "keyLightShape1"  # the light commands return the shape
+    cmds.listRelatives.side_effect = lambda node, parent=False: ["keyLight1"] if parent else []
+    cmds.rename.side_effect = lambda old, new: new
+    assert handlers.create_object(object_type, name="key") == {"name": "key", "type": object_type}
+    cmds.rename.assert_called_once_with("keyLight1", "key")
+
+
 def test_delete_objects_reports_missing(cmds):
     cmds.objExists.side_effect = lambda name: name != "ghost"
     assert handlers.delete_objects(["a", "ghost"]) == {"deleted": ["a"], "not_found": ["ghost"]}
@@ -388,17 +399,80 @@ def test_set_parent_checks_parent_exists(cmds):
 
 def test_assign_material_skips_missing_objects(cmds):
     cmds.objExists.side_effect = lambda n: n != "ghost"
-    cmds.listConnections.return_value = ["red_MATSG"]
+    cmds.listConnections.return_value = ["red_MATSG.surfaceShader"]
     result = handlers.assign_material("red_MAT", ["ball", "ghost", "cube"])
     assert result["assigned_to"] == ["ball", "cube"]
     assert cmds.sets.call_count == 2
 
 
-def test_assign_material_without_shading_group(cmds):
+def test_assign_default_material_uses_the_mesh_shading_group(cmds):
     cmds.objExists.return_value = True
-    cmds.listConnections.return_value = []
+    # What Maya 2025 returns for its default material: the particle group comes first
+    cmds.listConnections.return_value = ["initialParticleSE.surfaceShader", "initialShadingGroup.surfaceShader"]
+    assert handlers.assign_material("standardSurface1", ["ball"])["shading_group"] == "initialShadingGroup"
+    cmds.sets.assert_called_once_with("ball", edit=True, forceElement="initialShadingGroup")
+
+
+@pytest.mark.parametrize(
+    "connections",
+    [
+        [],
+        ["bumpySG.displacementShader"],  # connected, but not as the surface shader
+        ["initialParticleSE.surfaceShader"],  # only the particle group
+    ],
+)
+def test_assign_material_without_shading_group(cmds, connections):
+    cmds.objExists.return_value = True
+    cmds.listConnections.return_value = connections
     with pytest.raises(ValueError, match="No shading group found for material: red_MAT"):
         handlers.assign_material("red_MAT", ["ball"])
+    cmds.sets.assert_not_called()
+
+
+def _render_globals(cmds, renderer):
+    """Mock render globals in a dict, so tests can check what render_scene leaves behind."""
+    attrs = {
+        "defaultRenderGlobals.currentRenderer": renderer,
+        "defaultRenderGlobals.imageFormat": 51,  # EXR
+        "defaultResolution.width": 1920,
+        "defaultResolution.height": 1080,
+    }
+    during_render = {}
+
+    def render():
+        during_render.update(attrs)
+        return "/project/images/tmp/render.png"
+
+    cmds.getAttr.side_effect = attrs.__getitem__
+    cmds.setAttr.side_effect = attrs.__setitem__
+    cmds.render.side_effect = render
+    return attrs, during_render
+
+
+def test_software_render_is_png_and_restores_settings(cmds):
+    attrs, during_render = _render_globals(cmds, "mayaSoftware")
+    before = dict(attrs)
+    assert handlers.render_scene(width=64, height=32) == {"rendered_path": "/project/images/tmp/render.png"}
+    assert during_render["defaultRenderGlobals.imageFormat"] == 32
+    assert (during_render["defaultResolution.width"], during_render["defaultResolution.height"]) == (64, 32)
+    assert attrs == before
+
+
+def test_render_restores_settings_when_it_fails(cmds):
+    attrs, _ = _render_globals(cmds, "mayaSoftware")
+    before = dict(attrs)
+    cmds.render.side_effect = RuntimeError("render failed")
+    with pytest.raises(RuntimeError, match="render failed"):
+        handlers.render_scene(width=64)
+    assert attrs == before
+
+
+def test_render_rejects_unsupported_renderer(cmds):
+    attrs, _ = _render_globals(cmds, "vray")
+    with pytest.raises(ValueError, match="Rendering with vray is not supported"):
+        handlers.render_scene(width=64)
+    cmds.render.assert_not_called()
+    assert attrs["defaultResolution.width"] == 1920
 
 
 def test_set_render_settings_converts_and_skips_unset(cmds):

@@ -95,7 +95,9 @@ claude mcp add maya --scope user -- maya-mcp
 
 `get_scene_info` lists top-level objects in pages of 20 (sorted by name, without Maya's default cameras). Use `name_filter` (e.g. `"spike_*"`), `top_level_only=false`, `limit` (up to 500) and `offset`; `truncated` and `next_offset` tell the agent when there are more.
 
-`render_scene` uses Arnold when it is the active renderer and the Maya Software renderer otherwise. Renders without an `output_path` are deleted after they are returned.
+`render_scene` renders a PNG with the active renderer, which must be Arnold or Maya Software (other renderers give an error). `width`/`height` apply to that render only; the scene's render settings are left as they were. Renders without an `output_path` are deleted after they are returned.
+
+When a tool fails, the AI client gets an error result (`isError`) with Maya's message, e.g. the traceback from `execute_maya_code`.
 
 ## Example prompts
 
@@ -113,6 +115,7 @@ claude mcp add maya --scope user -- maya-mcp
 | `nothing is listening on 127.0.0.1:9877` | Maya isn't running or the commandPort isn't open. |
 | `connecting … timed out` | Maya is busy, or another client is holding the port open. |
 | `Maya did not answer … within 30s` | The command is still running in Maya (long operations, renders). |
+| `Unexpected reply from Maya` | Maya couldn't run the command, usually because `maya_mcp_handlers.py` isn't in its scripts directory. The Script Editor shows the error. |
 
 Claude Desktop logs are in `~/Library/Logs/Claude/mcp-server-maya.log` (macOS).
 

@@ -50,7 +50,8 @@ class FakeMaya:
     JSON reply followed by Maya's ``\\n\\x00`` terminator. Like Maya, it serves one
     connection at a time and keeps it open until the client closes it, so a client
     that leaves its socket open blocks everyone else. ``respond`` may also return
-    ``None`` to close the connection without answering, or raise to simulate a crash.
+    ``None`` to close the connection without answering, bytes to send as the raw reply
+    instead of JSON, or raise to simulate a crash.
     """
 
     def __init__(self, respond=None):
@@ -96,7 +97,8 @@ class FakeMaya:
         reply = self.respond(command)
         if reply is None:
             return
-        conn.sendall(json.dumps(reply).encode() + b"\n\x00")
+        body = reply if isinstance(reply, bytes) else json.dumps(reply).encode()
+        conn.sendall(body + b"\n\x00")
         # Like Maya, keep the connection until the client closes it (recv returns b"")
         while conn.recv(65536):
             pass

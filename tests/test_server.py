@@ -9,6 +9,7 @@ import threading
 
 import pytest
 from conftest import free_port, slow
+from mcp.server.mcpserver.exceptions import ToolError
 
 from maya_mcp import server
 from maya_mcp.server import MayaConnection, get_maya_connection, mcp
@@ -112,6 +113,19 @@ def test_connection_closed_without_reply(fake_maya):
         get_maya_connection().send_command("get_scene_info")
 
 
+@pytest.mark.parametrize("reply", [b"", b"None", b"[1, 2]"])
+def test_reply_that_is_not_from_dispatch(fake_maya, reply):
+    # What Maya sends back when the command expression fails, e.g. maya_mcp_handlers can't be imported
+    fake_maya(lambda cmd: reply)
+    with pytest.raises(RuntimeError, match="Unexpected reply from Maya.*Is maya_mcp_handlers.py in Maya's scripts"):
+        get_maya_connection().send_command("get_scene_info")
+
+
+def test_large_reply(fake_maya):
+    fake_maya(lambda cmd: {"status": "success", "result": "y" * 5_000_000})
+    assert get_maya_connection().send_command("execute_maya_code", {"code": "'y' * 5_000_000"}) == "y" * 5_000_000
+
+
 def test_default_host_is_ipv4(monkeypatch):
     monkeypatch.delenv("MAYA_HOST", raising=False)
     monkeypatch.delenv("MAYA_PORT", raising=False)
@@ -148,17 +162,17 @@ async def test_tool_passes_arguments(fake_maya):
 
 
 @pytest.mark.anyio
-async def test_tool_errors_are_text(fake_maya):
+async def test_tool_errors_carry_maya_message(fake_maya):
     fake_maya(lambda cmd: {"status": "error", "message": "Traceback ...\nZeroDivisionError: division by zero"})
-    result = await mcp.call_tool("execute_maya_code", {"code": "1/0"})
-    assert text(result).startswith("Error: Traceback")
+    with pytest.raises(ToolError, match=r"execute_maya_code: Traceback ...\nZeroDivisionError"):
+        await mcp.call_tool("execute_maya_code", {"code": "1/0"})
 
 
 @pytest.mark.anyio
 async def test_tool_when_maya_is_not_running(monkeypatch):
     monkeypatch.setenv("MAYA_PORT", str(free_port()))
-    result = await mcp.call_tool("get_scene_info", {})
-    assert text(result).startswith("Error: Could not connect to Maya: nothing is listening")
+    with pytest.raises(ToolError, match="Could not connect to Maya: nothing is listening"):
+        await mcp.call_tool("get_scene_info", {})
 
 
 @pytest.mark.anyio
@@ -200,8 +214,8 @@ async def test_image_tools_report_missing_file(fake_maya, tool):
             "result": {"filepath": "/nonexistent/x.png", "rendered_path": "/nonexistent/x.png"},
         }
     )
-    result = await mcp.call_tool(tool, {})
-    assert text(result).startswith("Error:") and "not found" in text(result)
+    with pytest.raises(ToolError, match="file not found at: /nonexistent/x.png"):
+        await mcp.call_tool(tool, {})
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +228,12 @@ async def test_stdio_end_to_end(fake_maya):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    maya = fake_maya(lambda cmd: {"status": "success", "result": {"scene_name": "untitled"}})
+    def respond(cmd):
+        if cmd["type"] == "get_object_info":
+            return {"status": "error", "message": "Object not found: ghost"}
+        return {"status": "success", "result": {"scene_name": "untitled"}}
+
+    maya = fake_maya(respond)
     params = StdioServerParameters(
         command=sys.executable,
         args=["-c", "from maya_mcp import main; main()"],
@@ -230,8 +249,10 @@ async def test_stdio_end_to_end(fake_maya):
                 assert init.server_info.version == __version__
                 assert len((await session.list_tools()).tools) == 23
                 result = await session.call_tool("get_scene_info", {})
-                assert json.loads(text(result)) == {"scene_name": "untitled"}
-    assert maya.commands[-1]["type"] == "get_scene_info"
+                assert json.loads(text(result)) == {"scene_name": "untitled"} and not result.is_error
+                failed = await session.call_tool("get_object_info", {"object_name": "ghost"})
+                assert failed.is_error and "Object not found: ghost" in text(failed)
+    assert [c["type"] for c in maya.commands[-2:]] == ["get_scene_info", "get_object_info"]
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +288,10 @@ async def test_every_tool_reaches_a_matching_handler(fake_maya, monkeypatch):
     tools = await mcp.list_tools()
     for tool in tools:
         maya.commands.clear()
-        await mcp.call_tool(tool.name, _all_arguments(tool))
+        try:
+            await mcp.call_tool(tool.name, _all_arguments(tool))
+        except ToolError:
+            pass  # the image tools find no image in the echo reply; only the command sent matters here
         assert len(maya.commands) == 1, f"{tool.name} sent {len(maya.commands)} commands"
         command = maya.commands[0]
         name, params = command["type"], command["params"]
