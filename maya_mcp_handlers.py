@@ -2,16 +2,17 @@
 # Place this file in ~/maya/scripts/ (or anywhere on MAYA_SCRIPT_PATH)
 # Then open Maya's commandPort: cmds.commandPort(name=":9877", sourceType="python")
 
-import maya.cmds as cmds
 import ast
+import io
 import json
 import linecache
-import traceback
-import tempfile
-import shutil
 import os
-import io
+import shutil
+import tempfile
+import traceback
 from contextlib import redirect_stdout
+
+import maya.cmds as cmds
 
 
 def dispatch(command_json: str) -> str:
@@ -22,29 +23,29 @@ def dispatch(command_json: str) -> str:
         params = command.get("params", {})
 
         handlers = {
-            "get_scene_info":           get_scene_info,
-            "get_object_info":          get_object_info,
-            "get_viewport_screenshot":  get_viewport_screenshot,
-            "execute_maya_code":        execute_maya_code,
-            "get_selected_objects":     get_selected_objects,
-            "create_object":            create_object,
-            "delete_objects":           delete_objects,
-            "duplicate_object":         duplicate_object,
-            "rename_object":            rename_object,
-            "set_parent":               set_parent,
-            "set_transform":            set_transform,
-            "get_transform":            get_transform,
-            "create_material":          create_material,
-            "assign_material":          assign_material,
-            "list_materials":           list_materials,
-            "set_material_property":    set_material_property,
-            "get_attribute":            get_attribute,
-            "set_attribute":            set_attribute,
-            "list_attributes":          list_attributes,
-            "render_scene":             render_scene,
-            "set_render_settings":      set_render_settings,
-            "export_scene":             export_scene,
-            "import_file":              import_file,
+            "get_scene_info": get_scene_info,
+            "get_object_info": get_object_info,
+            "get_viewport_screenshot": get_viewport_screenshot,
+            "execute_maya_code": execute_maya_code,
+            "get_selected_objects": get_selected_objects,
+            "create_object": create_object,
+            "delete_objects": delete_objects,
+            "duplicate_object": duplicate_object,
+            "rename_object": rename_object,
+            "set_parent": set_parent,
+            "set_transform": set_transform,
+            "get_transform": get_transform,
+            "create_material": create_material,
+            "assign_material": assign_material,
+            "list_materials": list_materials,
+            "set_material_property": set_material_property,
+            "get_attribute": get_attribute,
+            "set_attribute": set_attribute,
+            "list_attributes": list_attributes,
+            "render_scene": render_scene,
+            "set_render_settings": set_render_settings,
+            "export_scene": export_scene,
+            "import_file": import_file,
         }
 
         handler = handlers.get(cmd_type)
@@ -102,15 +103,17 @@ def get_scene_info(limit=20, offset=0, name_filter=None, top_level_only=True):
     nodes = sorted(n for n in nodes if not _is_startup_camera(n))
 
     objects = []
-    for t in nodes[offset:offset + limit]:
+    for t in nodes[offset : offset + limit]:
         try:
             pos = cmds.xform(t, q=True, worldSpace=True, translation=True)
-            objects.append({
-                "name": t,
-                "type": _object_kind(t),
-                "location": [round(v, 3) for v in pos],
-                "children": len(cmds.listRelatives(t, children=True, type="transform") or []),
-            })
+            objects.append(
+                {
+                    "name": t,
+                    "type": _object_kind(t),
+                    "location": [round(v, 3) for v in pos],
+                    "children": len(cmds.listRelatives(t, children=True, type="transform") or []),
+                }
+            )
         except Exception:
             # The node can't be queried (e.g. deleted meanwhile); list it without details
             objects.append({"name": t, "type": "unknown"})
@@ -235,9 +238,11 @@ def execute_maya_code(code):
         if isinstance(e, SyntaxError):
             details = "".join(traceback.format_exception_only(type(e), e))
         else:
-            details = ("Traceback (most recent call last):\n"
-                       + "".join(traceback.format_list(frames))
-                       + "".join(traceback.format_exception_only(type(e), e)))
+            details = (
+                "Traceback (most recent call last):\n"
+                + "".join(traceback.format_list(frames))
+                + "".join(traceback.format_exception_only(type(e), e))
+            )
         output = buf.getvalue()
         if output:
             details = "Output before the error:\n" + output + "\n" + details
@@ -260,16 +265,16 @@ def get_selected_objects():
 # ---------------------------------------------------------------------------
 
 _OBJECT_CREATORS = {
-    "cube":              lambda: cmds.polyCube()[0],
-    "sphere":            lambda: cmds.polySphere()[0],
-    "plane":             lambda: cmds.polyPlane()[0],
-    "cylinder":          lambda: cmds.polyCylinder()[0],
-    "cone":              lambda: cmds.polyCone()[0],
-    "torus":             lambda: cmds.polyTorus()[0],
-    "camera":            lambda: cmds.camera()[0],
-    "point_light":       lambda: cmds.pointLight(),
+    "cube": lambda: cmds.polyCube()[0],
+    "sphere": lambda: cmds.polySphere()[0],
+    "plane": lambda: cmds.polyPlane()[0],
+    "cylinder": lambda: cmds.polyCylinder()[0],
+    "cone": lambda: cmds.polyCone()[0],
+    "torus": lambda: cmds.polyTorus()[0],
+    "camera": lambda: cmds.camera()[0],
+    "point_light": lambda: cmds.pointLight(),
     "directional_light": lambda: cmds.directionalLight(),
-    "spot_light":        lambda: cmds.spotLight(),
+    "spot_light": lambda: cmds.spotLight(),
 }
 
 
@@ -277,8 +282,7 @@ def create_object(object_type, name=None):
     """Create a Maya object of the given type."""
     creator = _OBJECT_CREATORS.get(object_type)
     if not creator:
-        raise ValueError(f"Unknown object type: {object_type}. "
-                         f"Valid types: {list(_OBJECT_CREATORS)}")
+        raise ValueError(f"Unknown object type: {object_type}. Valid types: {list(_OBJECT_CREATORS)}")
     obj = creator()
     if name:
         obj = cmds.rename(obj, name)
@@ -329,6 +333,7 @@ def set_parent(child, parent=None):
 # Transform
 # ---------------------------------------------------------------------------
 
+
 def set_transform(name, translation=None, rotation=None, scale=None):
     """Set world-space transform values. All parameters are optional."""
     if not cmds.objExists(name):
@@ -362,6 +367,7 @@ def get_transform(name):
 # ---------------------------------------------------------------------------
 # Materials
 # ---------------------------------------------------------------------------
+
 
 def create_material(name, material_type="lambert"):
     """Create a shader and its shading group."""
@@ -414,6 +420,7 @@ def set_material_property(material_name, attribute, value):
 # Attributes
 # ---------------------------------------------------------------------------
 
+
 def get_attribute(node, attribute):
     """Get an attribute value."""
     if not cmds.objExists(node):
@@ -454,6 +461,7 @@ def list_attributes(node, keyable=False):
 # Rendering
 # ---------------------------------------------------------------------------
 
+
 def render_scene(output_path=None, width=None, height=None):
     """Render the current scene using the active renderer.
     If output_path is given, the image is moved there; otherwise the caller
@@ -476,13 +484,14 @@ def render_scene(output_path=None, width=None, height=None):
 
 def _render_arnold():
     """Render with Arnold into the Render View and save it as a PNG in a temp folder."""
-    cameras = [cmds.listRelatives(c, parent=True)[0]
-               for c in cmds.ls(type="camera") if cmds.getAttr(c + ".renderable")]
+    cameras = [cmds.listRelatives(c, parent=True)[0] for c in cmds.ls(type="camera") if cmds.getAttr(c + ".renderable")]
     if not cameras:
         raise RuntimeError("No renderable camera in the scene")
-    cmds.arnoldRender(width=cmds.getAttr("defaultResolution.width"),
-                      height=cmds.getAttr("defaultResolution.height"),
-                      camera=cameras[0])
+    cmds.arnoldRender(
+        width=cmds.getAttr("defaultResolution.width"),
+        height=cmds.getAttr("defaultResolution.height"),
+        camera=cameras[0],
+    )
 
     tmp_dir = tempfile.mkdtemp(prefix="maya_mcp_")
     filepath = os.path.join(tmp_dir, "render.png")
@@ -498,8 +507,7 @@ def _render_arnold():
     return filepath
 
 
-def set_render_settings(renderer=None, width=None, height=None,
-                         start_frame=None, end_frame=None):
+def set_render_settings(renderer=None, width=None, height=None, start_frame=None, end_frame=None):
     """Configure render globals."""
     if renderer:
         cmds.setAttr("defaultRenderGlobals.currentRenderer", renderer, type="string")
@@ -528,16 +536,16 @@ _EXPORT_TYPES = {
     "fbx": "FBX export",
     "obj": "OBJexport",
     "abc": "Alembic",
-    "ma":  "mayaAscii",
-    "mb":  "mayaBinary",
+    "ma": "mayaAscii",
+    "mb": "mayaBinary",
 }
 
 _IMPORT_TYPES = {
     "fbx": "FBX",
     "obj": "OBJ",
     "abc": "Alembic",
-    "ma":  "mayaAscii",
-    "mb":  "mayaBinary",
+    "ma": "mayaAscii",
+    "mb": "mayaBinary",
 }
 
 _EXPORT_PLUGINS = {
@@ -587,9 +595,6 @@ def import_file(filepath, import_type=None):
     if plugin:
         cmds.loadPlugin(plugin, quiet=True)
 
-    new_nodes = cmds.file(
-        filepath, i=True, type=file_type,
-        returnNewNodes=True, mergeNamespacesOnClash=False
-    ) or []
+    new_nodes = cmds.file(filepath, i=True, type=file_type, returnNewNodes=True, mergeNamespacesOnClash=False) or []
 
     return {"imported_from": filepath, "new_nodes": new_nodes, "count": len(new_nodes)}
