@@ -1,5 +1,6 @@
 """Shared fixtures: a mocked maya.cmds for the handlers, and a fake Maya commandPort for the server."""
 import base64
+import importlib.machinery
 import json
 import re
 import socket
@@ -14,10 +15,16 @@ import pytest
 # maya_mcp_handlers does `import maya.cmds as cmds` at import time, so the stand-in
 # has to be in sys.modules before any test imports it.
 _maya = types.ModuleType("maya")
+# Look like a real package, so imports and Python's traceback formatting work with it
+_maya.__spec__ = importlib.machinery.ModuleSpec("maya", None, is_package=True)
+_maya.__path__ = []
 _cmds = mock.MagicMock(name="maya.cmds")
+_open_maya_ui = mock.MagicMock(name="maya.OpenMayaUI")  # used by the screenshot handler
 _maya.cmds = _cmds
+_maya.OpenMayaUI = _open_maya_ui
 sys.modules.setdefault("maya", _maya)
 sys.modules.setdefault("maya.cmds", _cmds)
+sys.modules.setdefault("maya.OpenMayaUI", _open_maya_ui)
 
 
 @pytest.fixture

@@ -134,10 +134,23 @@ mcp = MCPServer("MayaMCP", version=__version__, lifespan=server_lifespan)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def get_scene_info(ctx: Context) -> str:
-    """Get information about the current Maya scene: all objects, materials, and scene name."""
+def get_scene_info(
+    ctx: Context,
+    limit: int = 20,
+    offset: int = 0,
+    name_filter: str = None,
+    top_level_only: bool = True,
+) -> str:
+    """Get the scene name, material count and a page of objects (sorted by name).
+    By default lists top-level objects only and leaves out Maya's default cameras.
+    name_filter takes Maya wildcards, e.g. "spike_*". If "truncated" is true, there
+    are more objects: call again with offset=next_offset. Set top_level_only=false
+    to include objects inside groups. limit is 1-500."""
     try:
-        result = get_maya_connection().send_command("get_scene_info")
+        params = {"limit": limit, "offset": offset, "top_level_only": top_level_only}
+        if name_filter:
+            params["name_filter"] = name_filter
+        result = get_maya_connection().send_command("get_scene_info", params)
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error: {e}"

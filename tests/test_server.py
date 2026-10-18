@@ -217,3 +217,40 @@ async def test_stdio_end_to_end(fake_maya):
                 result = await session.call_tool("get_scene_info", {})
                 assert json.loads(text(result)) == {"scene_name": "untitled"}
     assert maya.commands[-1]["type"] == "get_scene_info"
+
+
+# ---------------------------------------------------------------------------
+# Contract: every tool must reach a handler that accepts exactly what it sends
+# ---------------------------------------------------------------------------
+
+_DUMMY = {"string": "x", "integer": 1, "number": 1.0, "boolean": True, "array": ["x"]}
+
+
+def _all_arguments(tool):
+    """A value for every parameter in the tool's input schema, required or optional."""
+    return {name: _DUMMY.get(prop.get("type"), 1)
+            for name, prop in tool.input_schema.get("properties", {}).items()}
+
+
+@pytest.mark.anyio
+async def test_every_tool_reaches_a_matching_handler(fake_maya, cmds):
+    import inspect
+    import maya_mcp_handlers as handlers
+
+    maya = fake_maya()
+    tools = await mcp.list_tools()
+    for tool in tools:
+        maya.commands.clear()
+        await mcp.call_tool(tool.name, _all_arguments(tool))
+        assert len(maya.commands) == 1, f"{tool.name} sent {len(maya.commands)} commands"
+        command = maya.commands[0]
+
+        # dispatch() must know the command ...
+        reply = json.loads(handlers.dispatch(json.dumps(command)))
+        assert "Unknown command" not in reply.get("message", ""), f"{tool.name}: {reply['message']}"
+        # ... and the handler must accept every parameter the server sends
+        handler = getattr(handlers, command["type"])
+        try:
+            inspect.signature(handler).bind(**command["params"])
+        except TypeError as e:
+            pytest.fail(f"{tool.name} sends {sorted(command['params'])} but {command['type']}() {e}")

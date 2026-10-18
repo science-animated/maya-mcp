@@ -63,31 +63,70 @@ def dispatch(command_json: str) -> str:
 # Core handlers
 # ---------------------------------------------------------------------------
 
-def get_scene_info():
-    """Return scene metadata: name, objects (capped at 20), material count."""
-    transforms = cmds.ls(type="transform") or []
-    materials = cmds.ls(materials=True) or []
-    scene_name = cmds.file(q=True, sceneName=True) or "untitled"
+_MAX_SCENE_OBJECTS = 500
+
+
+def _is_startup_camera(transform):
+    """True for Maya's default persp/top/front/side cameras."""
+    for shape in cmds.listRelatives(transform, shapes=True, type="camera") or []:
+        if cmds.camera(shape, q=True, startupCamera=True):
+            return True
+    return False
+
+
+def _object_kind(transform):
+    """Describe a transform by what it holds: its shape type (mesh, camera, ...) or "group"."""
+    shapes = cmds.listRelatives(transform, shapes=True) or []
+    if shapes:
+        return cmds.objectType(shapes[0])
+    return "group" if cmds.listRelatives(transform, children=True) else "transform"
+
+
+def get_scene_info(limit=20, offset=0, name_filter=None, top_level_only=True):
+    """Return scene metadata and one page of objects, sorted by name.
+
+    By default only top-level objects are listed, and Maya's default cameras are
+    left out. name_filter takes Maya wildcards ("spike_*"). "truncated" tells the
+    caller there are more objects; fetch them with next_offset."""
+    limit, offset = int(limit), int(offset)
+    if not 1 <= limit <= _MAX_SCENE_OBJECTS:
+        raise ValueError(f"limit must be between 1 and {_MAX_SCENE_OBJECTS}, got {limit}")
+    if offset < 0:
+        raise ValueError(f"offset must be 0 or more, got {offset}")
+
+    pattern = name_filter or "*"
+    if top_level_only:
+        nodes = cmds.ls(pattern, assemblies=True) or []
+    else:
+        nodes = cmds.ls(pattern, type="transform") or []
+    nodes = sorted(n for n in nodes if not _is_startup_camera(n))
 
     objects = []
-    for t in transforms[:20]:
+    for t in nodes[offset:offset + limit]:
         try:
             pos = cmds.xform(t, q=True, worldSpace=True, translation=True)
-            obj_type = cmds.objectType(t)
             objects.append({
                 "name": t,
-                "type": obj_type,
+                "type": _object_kind(t),
                 "location": [round(v, 3) for v in pos],
+                "children": len(cmds.listRelatives(t, children=True, type="transform") or []),
             })
         except Exception:
-            pass
+            # The node can't be queried (e.g. deleted meanwhile); list it without details
+            objects.append({"name": t, "type": "unknown"})
 
-    return {
-        "scene_name": scene_name,
-        "object_count": len(transforms),
+    result = {
+        "scene_name": cmds.file(q=True, sceneName=True) or "untitled",
+        "object_count": len(nodes),
+        "offset": offset,
+        "returned": len(objects),
+        "truncated": offset + len(objects) < len(nodes),
         "objects": objects,
-        "materials_count": len(materials),
+        "materials_count": len(cmds.ls(materials=True) or []),
     }
+    if result["truncated"]:
+        result["next_offset"] = offset + len(objects)
+    return result
 
 
 def get_object_info(name):

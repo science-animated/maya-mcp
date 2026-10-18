@@ -137,3 +137,51 @@ async def test_render_scene():
     finally:
         w, h = eval(size)
         await call("set_render_settings", width=w, height=h)
+
+
+async def test_scene_info_paging_and_filter():
+    for i in range(5):
+        await call("create_object", object_type="sphere", name=f"mcp_it_ball_{i}")
+    page = await call("get_scene_info", name_filter="mcp_it_ball_*", limit=3)
+    assert (page["object_count"], page["returned"], page["truncated"], page["next_offset"]) == (5, 3, True, 3)
+    rest = await call("get_scene_info", name_filter="mcp_it_ball_*", limit=3, offset=3)
+    assert [o["name"] for o in page["objects"] + rest["objects"]] == [f"mcp_it_ball_{i}" for i in range(5)]
+    assert rest["truncated"] is False and page["objects"][0]["type"] == "mesh"
+    everything = await call("get_scene_info", limit=500)
+    assert not {"persp", "top", "front", "side"} & {o["name"] for o in everything["objects"]}
+
+
+async def test_object_info_and_selection():
+    await call("create_object", object_type="cube", name="mcp_it_info")
+    await call("create_material", name="mcp_it_infoMAT")
+    await call("assign_material", material_name="mcp_it_infoMAT", object_names=["mcp_it_info"])
+    info = await call("get_object_info", object_name="mcp_it_info")
+    assert info["materials"] == ["mcp_it_infoMAT"] and info["parent"] is None
+    assert info["bounding_box"]["min"] == pytest.approx([-0.5, -0.5, -0.5])
+    await maya("cmds.select('mcp_it_info')")
+    assert (await call("get_selected_objects"))["selected"] == ["mcp_it_info"]
+    await maya("cmds.select(clear=True)")
+
+
+async def test_get_attribute_and_unparent():
+    await call("create_object", object_type="cube", name="mcp_it_child")
+    await call("create_object", object_type="cube", name="mcp_it_parent")
+    await call("set_transform", name="mcp_it_child", translation=[4, 5, 6])
+    assert (await call("get_attribute", node="mcp_it_child", attribute="translate"))["value"] == pytest.approx([4, 5, 6])
+    await call("set_parent", child="mcp_it_child", parent="mcp_it_parent")
+    assert await maya("cmds.listRelatives('mcp_it_child', parent=True)") == "['mcp_it_parent']"
+    await call("set_parent", child="mcp_it_child")
+    assert await maya("cmds.listRelatives('mcp_it_child', parent=True)") is None   # no parent: no result
+
+
+async def test_set_render_settings():
+    before = await maya("(cmds.getAttr('defaultResolution.width'), cmds.getAttr('defaultResolution.height'), "
+                        "cmds.getAttr('defaultRenderGlobals.startFrame'), cmds.getAttr('defaultRenderGlobals.endFrame'))")
+    w, h, start, end = eval(before)
+    try:
+        await call("set_render_settings", width=321, height=123, start_frame=5, end_frame=9)
+        after = await maya("(cmds.getAttr('defaultResolution.width'), cmds.getAttr('defaultResolution.height'), "
+                           "cmds.getAttr('defaultRenderGlobals.startFrame'), cmds.getAttr('defaultRenderGlobals.endFrame'))")
+        assert eval(after) == (321, 123, 5.0, 9.0)
+    finally:
+        await call("set_render_settings", width=w, height=h, start_frame=start, end_frame=end)

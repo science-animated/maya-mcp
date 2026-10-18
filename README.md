@@ -92,6 +92,8 @@ claude mcp add maya --scope user -- maya-mcp
 | **Rendering** | `render_scene`, `set_render_settings` |
 | **File I/O** | `export_scene`, `import_file` |
 
+`get_scene_info` lists top-level objects in pages of 20 (sorted by name, without Maya's default cameras). Use `name_filter` (e.g. `"spike_*"`), `top_level_only=false`, `limit` (up to 500) and `offset`; `truncated` and `next_offset` tell the agent when there are more.
+
 `render_scene` uses Arnold when it is the active renderer and the Maya Software renderer otherwise. Renders without an `output_path` are deleted after they are returned.
 
 ## Example prompts
