@@ -1,5 +1,7 @@
 # Maya MCP
 
+[![Tests](https://github.com/science-animated/maya-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/science-animated/maya-mcp/actions/workflows/tests.yml)
+
 Connect Autodesk Maya to AI assistants (Claude, Cursor, VS Code) via the [Model Context Protocol](https://modelcontextprotocol.io).
 
 ## How it works
@@ -120,6 +122,19 @@ uv tool install --editable .
 ```
 
 With an editable install, changes to `src/maya_mcp/server.py` take effect when the AI client restarts the server (`/mcp` → reconnect in Claude Code). Changes to `maya_mcp_handlers.py` need a Maya restart or `importlib.reload(maya_mcp_handlers)`.
+
+### Tests
+
+```bash
+uv run pytest                  # unit + server tests, no Maya needed
+uv run pytest -m integration   # against a running Maya with the commandPort open
+```
+
+- `tests/test_handlers.py`: the Maya-side handlers, with `maya.cmds` mocked.
+- `tests/test_server.py`: the MCP server against a fake commandPort (connections, timeouts, error messages, tools, and a full stdio session).
+- `tests/integration/`: real Maya. Creates `mcp_it_*` nodes and deletes them again, and renders a 64×64 Arnold image if Arnold is the active renderer.
+
+GitHub Actions runs the first two on Linux, macOS and Windows for every push and pull request.
 
 ## Supported Maya versions
 

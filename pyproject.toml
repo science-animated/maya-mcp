@@ -23,3 +23,17 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+# Integration tests change the open Maya scene; run them explicitly with `pytest -m integration`
+addopts = "-m 'not integration'"
+markers = [
+    "integration: needs a running Maya with the commandPort open",
+]
