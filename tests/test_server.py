@@ -233,10 +233,12 @@ def _all_arguments(tool):
 
 
 @pytest.mark.anyio
-async def test_every_tool_reaches_a_matching_handler(fake_maya, cmds):
+async def test_every_tool_reaches_a_matching_handler(fake_maya, cmds, tmp_path, monkeypatch):
     import inspect
     import maya_mcp_handlers as handlers
 
+    # The dummy file paths ("x") are relative: keep anything the mocked handlers write out of the repo
+    monkeypatch.chdir(tmp_path)
     maya = fake_maya()
     tools = await mcp.list_tools()
     for tool in tools:
