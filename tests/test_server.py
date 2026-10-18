@@ -233,12 +233,11 @@ def _all_arguments(tool):
 
 
 @pytest.mark.anyio
-async def test_every_tool_reaches_a_matching_handler(fake_maya, cmds, tmp_path, monkeypatch):
+async def test_every_tool_reaches_a_matching_handler(fake_maya, monkeypatch):
     import inspect
+
     import maya_mcp_handlers as handlers
 
-    # The dummy file paths ("x") are relative: keep anything the mocked handlers write out of the repo
-    monkeypatch.chdir(tmp_path)
     maya = fake_maya()
     tools = await mcp.list_tools()
     for tool in tools:
@@ -246,13 +245,20 @@ async def test_every_tool_reaches_a_matching_handler(fake_maya, cmds, tmp_path, 
         await mcp.call_tool(tool.name, _all_arguments(tool))
         assert len(maya.commands) == 1, f"{tool.name} sent {len(maya.commands)} commands"
         command = maya.commands[0]
+        name, params = command["type"], command["params"]
 
-        # dispatch() must know the command ...
+        # Replace the handler with a stub that checks the parameters against the real
+        # signature, so no handler code runs (with mocked Maya it could touch real files)
+        real = getattr(handlers, name, None)
+        assert callable(real), f"{tool.name} sends '{name}', but maya_mcp_handlers has no such function"
+        calls = []
+
+        def stub(**kwargs):
+            inspect.signature(real).bind(**kwargs)  # TypeError -> error reply from dispatch()
+            calls.append(kwargs)
+            return {}
+
+        monkeypatch.setattr(handlers, name, stub)
         reply = json.loads(handlers.dispatch(json.dumps(command)))
-        assert "Unknown command" not in reply.get("message", ""), f"{tool.name}: {reply['message']}"
-        # ... and the handler must accept every parameter the server sends
-        handler = getattr(handlers, command["type"])
-        try:
-            inspect.signature(handler).bind(**command["params"])
-        except TypeError as e:
-            pytest.fail(f"{tool.name} sends {sorted(command['params'])} but {command['type']}() {e}")
+        assert reply["status"] == "success", f"{tool.name} sends {sorted(params)}: {reply['message']}"
+        assert calls == [params], f"dispatch() does not route '{name}' to {name}()"
