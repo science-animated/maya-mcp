@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by git blame (GitHub reads this file automatically).
+# Locally: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# Format maya_mcp_handlers.py with ruff
+27653da1732081fc03133d275f4325370e3e7cf8
