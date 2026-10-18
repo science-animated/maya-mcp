@@ -3,7 +3,9 @@
 # Then open Maya's commandPort: cmds.commandPort(name=":9877", sourceType="python")
 
 import maya.cmds as cmds
+import ast
 import json
+import linecache
 import traceback
 import tempfile
 import shutil
@@ -159,13 +161,49 @@ def get_viewport_screenshot(max_size=800):
     return {"filepath": filepath, "width": width, "height": height}
 
 
+_CODE_FILENAME = "<maya_mcp>"
+
+
 def execute_maya_code(code):
-    """Execute arbitrary Python code in Maya's context, capturing stdout."""
-    namespace = {"cmds": cmds}
+    """Execute arbitrary Python code in Maya's context, capturing stdout.
+
+    Like the Script Editor, if the last statement is an expression its value is
+    returned as "result". On failure the error message contains the traceback of
+    the submitted code (with line numbers) and any output printed before it."""
+    # Register the source so tracebacks can show the failing lines
+    linecache.cache[_CODE_FILENAME] = (len(code), None, code.splitlines(True), _CODE_FILENAME)
+    namespace = {"cmds": cmds, "__name__": "__main__"}
     buf = io.StringIO()
-    with redirect_stdout(buf):
-        exec(code, namespace)
-    return {"executed": True, "output": buf.getvalue()}
+    result = None
+    try:
+        tree = ast.parse(code, _CODE_FILENAME)
+        last_expr = None
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
+            last_expr = ast.Expression(tree.body.pop().value)
+        with redirect_stdout(buf):
+            exec(compile(tree, _CODE_FILENAME, "exec"), namespace)
+            if last_expr is not None:
+                result = eval(compile(last_expr, _CODE_FILENAME, "eval"), namespace)
+    except Exception as e:
+        frames = traceback.extract_tb(e.__traceback__)
+        # Drop the handler's own frames; keep the submitted code and what it called
+        while frames and frames[0].filename != _CODE_FILENAME:
+            frames.pop(0)
+        if isinstance(e, SyntaxError):
+            details = "".join(traceback.format_exception_only(type(e), e))
+        else:
+            details = ("Traceback (most recent call last):\n"
+                       + "".join(traceback.format_list(frames))
+                       + "".join(traceback.format_exception_only(type(e), e)))
+        output = buf.getvalue()
+        if output:
+            details = "Output before the error:\n" + output + "\n" + details
+        raise RuntimeError(details.rstrip()) from None
+
+    response = {"executed": True, "output": buf.getvalue()}
+    if result is not None:
+        response["result"] = repr(result)
+    return response
 
 
 def get_selected_objects():

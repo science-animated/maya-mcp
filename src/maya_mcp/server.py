@@ -168,7 +168,9 @@ def get_viewport_screenshot(ctx: Context, max_size: int = 800) -> Union[Image, s
 
 @mcp.tool()
 def execute_maya_code(ctx: Context, code: str) -> str:
-    """Execute arbitrary Python code inside Maya. Returns stdout output from the execution."""
+    """Execute arbitrary Python code inside Maya. `cmds` (maya.cmds) is pre-imported.
+    Returns printed output, and the value of the last line if it is an expression
+    (like the Script Editor). On errors, returns the traceback with line numbers."""
     try:
         result = get_maya_connection().send_command("execute_maya_code", {"code": code})
         return json.dumps(result, indent=2)
