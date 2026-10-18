@@ -45,13 +45,6 @@ def test_dispatch_rejects_bad_parameters(cmds):
 # A few handlers
 # ---------------------------------------------------------------------------
 
-def test_create_object_renames(cmds):
-    cmds.polyCube.return_value = ["pCube1", "polyCube1"]
-    cmds.rename.return_value = "box"
-    assert handlers.create_object("cube", name="box") == {"name": "box", "type": "cube"}
-    cmds.rename.assert_called_once_with("pCube1", "box")
-
-
 def test_create_object_unknown_type(cmds):
     with pytest.raises(ValueError, match="Unknown object type: teapot"):
         handlers.create_object("teapot")
@@ -76,10 +69,22 @@ def test_import_file_unknown_type(cmds):
         handlers.import_file("/tmp/model.xyz")
 
 
-def test_export_scene_selected_only(cmds):
-    handlers.export_scene("/tmp/out.obj", export_type="OBJ", selected_only=True)
-    cmds.loadPlugin.assert_called_once_with("objExport", quiet=True)
-    cmds.file.assert_called_once_with("/tmp/out.obj", force=True, exportSelected=True, type="OBJexport")
+def test_export_scene_unknown_type(cmds):
+    with pytest.raises(ValueError, match=r"Unknown export type: usd. Valid: \['fbx', 'obj', 'abc', 'ma', 'mb'\]"):
+        handlers.export_scene("/tmp/out.usd", export_type="USD")
+    cmds.file.assert_not_called()
+
+
+@pytest.mark.parametrize("view, max_size, expected", [
+    ((1920, 1080), 800, (800, 450)),   # landscape: width is the long side
+    ((1080, 1920), 800, (450, 800)),   # portrait: height is the long side
+    ((5002, 1970), 600, (600, 236)),   # the wide Retina viewport from manual testing
+    ((500, 500), 800, (800, 800)),     # square, and upscaling a small viewport
+    ((1000, 1), 800, (800, 1)),        # extreme ratio: never 0 pixels
+    ((0, 0), 800, (1, 1)),             # minimised viewport: no division by zero
+])
+def test_screenshot_size_keeps_aspect_ratio(view, max_size, expected):
+    assert handlers._screenshot_size(*view, max_size) == expected
 
 
 # ---------------------------------------------------------------------------

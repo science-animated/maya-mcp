@@ -127,15 +127,19 @@ def get_object_info(name):
     }
 
 
+def _screenshot_size(view_w, view_h, max_size):
+    """Scale the viewport size so its longer side is max_size, keeping the aspect ratio."""
+    scale = float(max_size) / max(view_w, view_h, 1)
+    return max(1, int(round(view_w * scale))), max(1, int(round(view_h * scale)))
+
+
 def get_viewport_screenshot(max_size=800):
     """Capture the active viewport and return the file path.
     Keeps the viewport's aspect ratio, scaling the longer side to max_size."""
     import maya.OpenMayaUI as omui
 
     view = omui.M3dView.active3dView()
-    view_w, view_h = view.portWidth(), view.portHeight()
-    scale = float(max_size) / max(view_w, view_h, 1)
-    width, height = max(1, int(round(view_w * scale))), max(1, int(round(view_h * scale)))
+    width, height = _screenshot_size(view.portWidth(), view.portHeight(), max_size)
 
     tmp_dir = tempfile.mkdtemp(prefix="maya_mcp_")
     filepath = os.path.join(tmp_dir, "screenshot.png")
