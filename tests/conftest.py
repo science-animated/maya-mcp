@@ -1,4 +1,5 @@
 """Shared fixtures: a mocked maya.cmds for the handlers, and a fake Maya commandPort for the server."""
+
 import base64
 import importlib.machinery
 import json
@@ -132,7 +133,9 @@ def free_port():
 
 def slow(seconds, reply):
     """A respond() function that answers after a delay."""
+
     def respond(command):
         time.sleep(seconds)
         return reply
+
     return respond

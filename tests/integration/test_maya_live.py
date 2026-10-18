@@ -6,12 +6,12 @@ renders the current scene with Arnold at 64x64 and restores the render resolutio
 
     uv run pytest -m integration
 """
+
 import base64
 import json
 import os
 import socket
 import struct
-import sys
 
 import pytest
 
@@ -58,9 +58,7 @@ async def maya(code):
 async def clean_scene():
     await call("execute_maya_code", code=RELOAD)
     yield
-    await call("execute_maya_code", code=(
-        "nodes = cmds.ls('mcp_it_*')\n"
-        "if nodes: cmds.delete(nodes)"))
+    await call("execute_maya_code", code=("nodes = cmds.ls('mcp_it_*')\nif nodes: cmds.delete(nodes)"))
 
 
 async def test_scene_info():
@@ -119,7 +117,9 @@ async def test_viewport_screenshot_keeps_aspect_ratio():
     image = [c for c in result.content if c.type == "image"][0]
     width, height = struct.unpack(">II", base64.b64decode(image.data)[16:24])
     assert max(width, height) == 300
-    view = await maya("import maya.OpenMayaUI as omui\nv = omui.M3dView.active3dView()\n(v.portWidth(), v.portHeight())")
+    view = await maya(
+        "import maya.OpenMayaUI as omui\nv = omui.M3dView.active3dView()\n(v.portWidth(), v.portHeight())"
+    )
     vw, vh = eval(view)
     assert width / height == pytest.approx(vw / vh, rel=0.02)
 
@@ -167,21 +167,28 @@ async def test_get_attribute_and_unparent():
     await call("create_object", object_type="cube", name="mcp_it_child")
     await call("create_object", object_type="cube", name="mcp_it_parent")
     await call("set_transform", name="mcp_it_child", translation=[4, 5, 6])
-    assert (await call("get_attribute", node="mcp_it_child", attribute="translate"))["value"] == pytest.approx([4, 5, 6])
+    translate = await call("get_attribute", node="mcp_it_child", attribute="translate")
+    assert translate["value"] == pytest.approx([4, 5, 6])
     await call("set_parent", child="mcp_it_child", parent="mcp_it_parent")
     assert await maya("cmds.listRelatives('mcp_it_child', parent=True)") == "['mcp_it_parent']"
     await call("set_parent", child="mcp_it_child")
-    assert await maya("cmds.listRelatives('mcp_it_child', parent=True)") is None   # no parent: no result
+    assert await maya("cmds.listRelatives('mcp_it_child', parent=True)") is None  # no parent: no result
+
+
+RENDER_SETTINGS = "tuple(cmds.getAttr(a) for a in {})".format(
+    (
+        "defaultResolution.width",
+        "defaultResolution.height",
+        "defaultRenderGlobals.startFrame",
+        "defaultRenderGlobals.endFrame",
+    )
+)
 
 
 async def test_set_render_settings():
-    before = await maya("(cmds.getAttr('defaultResolution.width'), cmds.getAttr('defaultResolution.height'), "
-                        "cmds.getAttr('defaultRenderGlobals.startFrame'), cmds.getAttr('defaultRenderGlobals.endFrame'))")
-    w, h, start, end = eval(before)
+    w, h, start, end = eval(await maya(RENDER_SETTINGS))
     try:
         await call("set_render_settings", width=321, height=123, start_frame=5, end_frame=9)
-        after = await maya("(cmds.getAttr('defaultResolution.width'), cmds.getAttr('defaultResolution.height'), "
-                           "cmds.getAttr('defaultRenderGlobals.startFrame'), cmds.getAttr('defaultRenderGlobals.endFrame'))")
-        assert eval(after) == (321, 123, 5.0, 9.0)
+        assert eval(await maya(RENDER_SETTINGS)) == (321, 123, 5.0, 9.0)
     finally:
         await call("set_render_settings", width=w, height=h, start_frame=start, end_frame=end)

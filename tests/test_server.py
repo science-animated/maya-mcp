@@ -1,4 +1,5 @@
 """Tests for the MCP server (src/maya_mcp/server.py) against a fake Maya commandPort."""
+
 import json
 import os
 import socket
@@ -7,8 +8,8 @@ import tempfile
 import threading
 
 import pytest
-
 from conftest import free_port, slow
+
 from maya_mcp import server
 from maya_mcp.server import MayaConnection, get_maya_connection, mcp
 
@@ -22,6 +23,7 @@ def text(result):
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
+
 
 def test_send_command_round_trip(fake_maya):
     maya = fake_maya()
@@ -41,7 +43,7 @@ def test_each_command_uses_its_own_connection(fake_maya):
     for _ in range(5):
         get_maya_connection().send_command("get_scene_info")
     assert maya.connections == 5
-    assert maya.open_connections == 0      # nothing is left open between commands
+    assert maya.open_connections == 0  # nothing is left open between commands
 
 
 def test_parallel_commands_all_get_their_own_answer(fake_maya):
@@ -78,6 +80,7 @@ def test_nothing_listening(monkeypatch):
 def test_connect_timeout(monkeypatch):
     def timeout(*args, **kwargs):
         raise socket.timeout("timed out")
+
     monkeypatch.setattr(server.socket, "create_connection", timeout)
     with pytest.raises(ConnectionError, match="timed out after 3s. The port is busy"):
         MayaConnection("127.0.0.1", 9877).send_command("get_scene_info")
@@ -86,14 +89,16 @@ def test_connect_timeout(monkeypatch):
 def test_unreachable_host(monkeypatch):
     def unreachable(*args, **kwargs):
         raise OSError(65, "No route to host")
+
     monkeypatch.setattr(server.socket, "create_connection", unreachable)
     with pytest.raises(ConnectionError, match="is unreachable"):
         MayaConnection("10.0.0.1", 9877).send_command("get_scene_info")
 
 
 def test_reply_timeout_does_not_leak_into_next_command(fake_maya):
-    replies = iter([slow(1.0, {"status": "success", "result": "late"}),
-                    lambda cmd: {"status": "success", "result": "fresh"}])
+    replies = iter(
+        [slow(1.0, {"status": "success", "result": "late"}), lambda cmd: {"status": "success", "result": "fresh"}]
+    )
     fake_maya(lambda cmd: next(replies)(cmd))
     conn = get_maya_connection()
     with pytest.raises(ConnectionError, match="did not answer 'get_scene_info' within 0s"):
@@ -117,6 +122,7 @@ def test_default_host_is_ipv4(monkeypatch):
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.anyio
 async def test_lists_all_tools():
@@ -156,10 +162,13 @@ async def test_tool_when_maya_is_not_running(monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("tool, key, args", [
-    ("get_viewport_screenshot", "filepath", {"max_size": 400}),
-    ("render_scene", "rendered_path", {"width": 64, "height": 64}),
-])
+@pytest.mark.parametrize(
+    "tool, key, args",
+    [
+        ("get_viewport_screenshot", "filepath", {"max_size": 400}),
+        ("render_scene", "rendered_path", {"width": 64, "height": 64}),
+    ],
+)
 async def test_image_tools_return_png_and_clean_up(fake_maya, tool, key, args):
     folder = tempfile.mkdtemp(prefix="maya_mcp_")
     path = os.path.join(folder, "image.png")
@@ -185,8 +194,12 @@ async def test_render_keeps_file_written_to_output_path(fake_maya, tmp_path):
 @pytest.mark.anyio
 @pytest.mark.parametrize("tool", ["get_viewport_screenshot", "render_scene"])
 async def test_image_tools_report_missing_file(fake_maya, tool):
-    fake_maya(lambda cmd: {"status": "success", "result": {"filepath": "/nonexistent/x.png",
-                                                           "rendered_path": "/nonexistent/x.png"}})
+    fake_maya(
+        lambda cmd: {
+            "status": "success",
+            "result": {"filepath": "/nonexistent/x.png", "rendered_path": "/nonexistent/x.png"},
+        }
+    )
     result = await mcp.call_tool(tool, {})
     assert text(result).startswith("Error:") and "not found" in text(result)
 
@@ -194,6 +207,7 @@ async def test_image_tools_report_missing_file(fake_maya, tool):
 # ---------------------------------------------------------------------------
 # Full protocol: start the server as a subprocess and talk to it over stdio
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.anyio
 async def test_stdio_end_to_end(fake_maya):
@@ -212,6 +226,7 @@ async def test_stdio_end_to_end(fake_maya):
                 init = await session.initialize()
                 assert init.server_info.name == "MayaMCP"
                 from maya_mcp import __version__
+
                 assert init.server_info.version == __version__
                 assert len((await session.list_tools()).tools) == 23
                 result = await session.call_tool("get_scene_info", {})
@@ -228,8 +243,18 @@ _DUMMY = {"string": "x", "integer": 1, "number": 1.0, "boolean": True, "array": 
 
 def _all_arguments(tool):
     """A value for every parameter in the tool's input schema, required or optional."""
-    return {name: _DUMMY.get(prop.get("type"), 1)
-            for name, prop in tool.input_schema.get("properties", {}).items()}
+    return {name: _DUMMY.get(prop.get("type"), 1) for name, prop in tool.input_schema.get("properties", {}).items()}
+
+
+def _signature_stub(signature, calls):
+    """A handler stand-in: checks the parameters against the real signature and records them."""
+
+    def stub(**kwargs):
+        signature.bind(**kwargs)  # TypeError -> error reply from dispatch()
+        calls.append(kwargs)
+        return {}
+
+    return stub
 
 
 @pytest.mark.anyio
@@ -252,13 +277,7 @@ async def test_every_tool_reaches_a_matching_handler(fake_maya, monkeypatch):
         real = getattr(handlers, name, None)
         assert callable(real), f"{tool.name} sends '{name}', but maya_mcp_handlers has no such function"
         calls = []
-
-        def stub(**kwargs):
-            inspect.signature(real).bind(**kwargs)  # TypeError -> error reply from dispatch()
-            calls.append(kwargs)
-            return {}
-
-        monkeypatch.setattr(handlers, name, stub)
+        monkeypatch.setattr(handlers, name, _signature_stub(inspect.signature(real), calls))
         reply = json.loads(handlers.dispatch(json.dumps(command)))
         assert reply["status"] == "success", f"{tool.name} sends {sorted(params)}: {reply['message']}"
         assert calls == [params], f"dispatch() does not route '{name}' to {name}()"

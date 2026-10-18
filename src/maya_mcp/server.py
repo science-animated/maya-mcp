@@ -1,17 +1,17 @@
-from mcp.server.mcpserver import MCPServer, Context, Image
-import socket
-import json
 import base64
+import json
 import logging
 import os
-from dataclasses import dataclass
+import socket
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, Any, Union
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, Union
+
+from mcp.server.mcpserver import Context, Image, MCPServer
 
 from . import __version__
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("MayaMCP")
 
 DEFAULT_HOST = "127.0.0.1"  # Maya's commandPort only listens on IPv4
@@ -28,25 +28,26 @@ class MayaConnection:
     """Talks to Maya's commandPort. Opens a fresh socket for every command so
     an idle client never holds the port and a late reply can't leak into the
     next command."""
+
     host: str
     port: int
 
     def _connect(self) -> socket.socket:
         try:
             return socket.create_connection((self.host, self.port), timeout=CONNECT_TIMEOUT)
-        except ConnectionRefusedError:
+        except ConnectionRefusedError as e:
             raise ConnectionError(
                 f"Could not connect to Maya: nothing is listening on {self.host}:{self.port}. "
                 f"Make sure Maya is open and run: {OPEN_PORT_HINT}"
-            )
-        except socket.timeout:
+            ) from e
+        except socket.timeout as e:
             raise ConnectionError(
                 f"Could not connect to Maya: connecting to {self.host}:{self.port} timed out "
                 f"after {CONNECT_TIMEOUT:.0f}s. The port is busy (Maya is stuck on a long "
                 f"operation or another client is using it) or the host is unreachable."
-            )
+            ) from e
         except OSError as e:
-            raise ConnectionError(f"Could not connect to Maya: {self.host}:{self.port} is unreachable ({e})")
+            raise ConnectionError(f"Could not connect to Maya: {self.host}:{self.port} is unreachable ({e})") from e
 
     @staticmethod
     def _receive_response(sock: socket.socket) -> str:
@@ -62,16 +63,14 @@ class MayaConnection:
                 return data[: data.index(b"\x00")].decode("utf-8").strip()
         raise ConnectionError("Maya commandPort closed without sending a response")
 
-    def send_command(self, command_type: str, params: Dict[str, Any] = None,
-                     timeout: float = DEFAULT_RESPONSE_TIMEOUT) -> Dict[str, Any]:
+    def send_command(
+        self, command_type: str, params: Dict[str, Any] = None, timeout: float = DEFAULT_RESPONSE_TIMEOUT
+    ) -> Dict[str, Any]:
         command = {"type": command_type, "params": params or {}}
         command_json = json.dumps(command)
         encoded = base64.b64encode(command_json.encode("utf-8")).decode("ascii")
         # Single-expression form — commandPort returns the value of a single expression
-        code = (
-            f"__import__('maya_mcp_handlers').dispatch("
-            f"__import__('base64').b64decode(b'{encoded}').decode())"
-        )
+        code = f"__import__('maya_mcp_handlers').dispatch(__import__('base64').b64decode(b'{encoded}').decode())"
 
         logger.info(f"Sending command: {command_type}")
         with self._connect() as sock:
@@ -79,13 +78,12 @@ class MayaConnection:
             try:
                 sock.sendall(code.encode("utf-8"))
                 raw = self._receive_response(sock)
-            except socket.timeout:
+            except socket.timeout as e:
                 raise ConnectionError(
-                    f"Maya did not answer '{command_type}' within {timeout:.0f}s. "
-                    f"It may still be working on it."
-                )
+                    f"Maya did not answer '{command_type}' within {timeout:.0f}s. It may still be working on it."
+                ) from e
             except (BrokenPipeError, ConnectionResetError) as e:
-                raise ConnectionError(f"Lost connection to Maya: {e}")
+                raise ConnectionError(f"Lost connection to Maya: {e}") from e
         logger.info(f"Received response ({len(raw)} bytes)")
 
         response = json.loads(raw)
@@ -132,6 +130,7 @@ mcp = MCPServer("MayaMCP", version=__version__, lifespan=server_lifespan)
 # ---------------------------------------------------------------------------
 # Core tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 def get_scene_info(
@@ -205,6 +204,7 @@ def get_selected_objects(ctx: Context) -> str:
 # Object management tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 def create_object(ctx: Context, object_type: str, name: str = None) -> str:
     """Create a Maya object. object_type: cube, sphere, plane, cylinder, cone, torus,
@@ -266,6 +266,7 @@ def set_parent(ctx: Context, child: str, parent: str = None) -> str:
 # Transform tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 def set_transform(
     ctx: Context,
@@ -304,14 +305,13 @@ def get_transform(ctx: Context, name: str) -> str:
 # Material tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 def create_material(ctx: Context, name: str, material_type: str = "lambert") -> str:
     """Create a Maya material/shader and its shading group.
     material_type: lambert, blinn, phong, standardSurface, aiStandardSurface."""
     try:
-        result = get_maya_connection().send_command(
-            "create_material", {"name": name, "material_type": material_type}
-        )
+        result = get_maya_connection().send_command("create_material", {"name": name, "material_type": material_type})
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error: {e}"
@@ -340,9 +340,7 @@ def list_materials(ctx: Context) -> str:
 
 
 @mcp.tool()
-def set_material_property(
-    ctx: Context, material_name: str, attribute: str, value
-) -> str:
+def set_material_property(ctx: Context, material_name: str, attribute: str, value) -> str:
     """Set a property on a Maya material. For colors pass [r,g,b] (0-1 range).
     Examples: attribute='color' value=[1,0,0] for red, attribute='transparency' value=[0.5,0.5,0.5]."""
     try:
@@ -359,13 +357,12 @@ def set_material_property(
 # Attribute tools
 # ---------------------------------------------------------------------------
 
+
 @mcp.tool()
 def get_attribute(ctx: Context, node: str, attribute: str) -> str:
     """Get the value of an attribute on a Maya node. Example: node='pCube1', attribute='tx'."""
     try:
-        result = get_maya_connection().send_command(
-            "get_attribute", {"node": node, "attribute": attribute}
-        )
+        result = get_maya_connection().send_command("get_attribute", {"node": node, "attribute": attribute})
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error: {e}"
@@ -387,9 +384,7 @@ def set_attribute(ctx: Context, node: str, attribute: str, value) -> str:
 def list_attributes(ctx: Context, node: str, keyable: bool = False) -> str:
     """List attributes on a Maya node. Set keyable=true to list only keyable attributes."""
     try:
-        result = get_maya_connection().send_command(
-            "list_attributes", {"node": node, "keyable": keyable}
-        )
+        result = get_maya_connection().send_command("list_attributes", {"node": node, "keyable": keyable})
         return json.dumps(result, indent=2)
     except Exception as e:
         return f"Error: {e}"
@@ -398,6 +393,7 @@ def list_attributes(ctx: Context, node: str, keyable: bool = False) -> str:
 # ---------------------------------------------------------------------------
 # Rendering tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool(structured_output=False)
 def render_scene(
@@ -417,8 +413,7 @@ def render_scene(
         params["output_path"] = output_path
 
     try:
-        result = get_maya_connection().send_command("render_scene", params,
-                                                    timeout=RENDER_RESPONSE_TIMEOUT)
+        result = get_maya_connection().send_command("render_scene", params, timeout=RENDER_RESPONSE_TIMEOUT)
         rendered_path = result.get("rendered_path", "")
         if not rendered_path or not os.path.exists(rendered_path):
             return f"Error: Rendered file not found at: {rendered_path}"
@@ -463,6 +458,7 @@ def set_render_settings(
 # ---------------------------------------------------------------------------
 # File I/O tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 def export_scene(

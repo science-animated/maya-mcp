@@ -46,6 +46,7 @@ To activate it without restarting Maya, run this in the Script Editor:
 
 ```python
 import maya.cmds as cmds
+
 cmds.commandPort(name=":9877", sourceType="python")
 ```
 
@@ -124,6 +125,19 @@ uv tool install --editable .
 ```
 
 With an editable install, changes to `src/maya_mcp/server.py` take effect when the AI client restarts the server (`/mcp` → reconnect in Claude Code). Changes to `maya_mcp_handlers.py` need a Maya restart or `importlib.reload(maya_mcp_handlers)`.
+
+### Formatting and linting
+
+The code is formatted and linted with [ruff](https://docs.astral.sh/ruff/) (settings in `pyproject.toml`). Install the pre-commit hook once, and every commit is checked and auto-formatted:
+
+```bash
+uv sync
+uv run pre-commit install
+```
+
+If the hook reformats a file, the commit stops: review the change, `git add` it and commit again. To run the checks by hand: `uv run ruff format .` and `uv run ruff check --fix .`. CI fails if either finds anything.
+
+`maya_mcp_handlers.py` and `userSetup.py` run inside Maya's own Python (3.7 in Maya 2022), so ruff is set to keep them compatible with Python 3.7.
 
 ### Tests
 
